@@ -1,0 +1,7 @@
+apiVersion: travisci.com/v1alpha1
+kind: WorkerCluster
+metadata:
+  name: example-workercluster
+spec:
+  # Add fields here
+  size: 3
