@@ -36,6 +36,14 @@ required = [
   revision = "1f13a808da65775f22cbf47862c4e5898d8f4ca1"
 
 [[override]]
+  name = "k8s.io/kubernetes"
+  revision = "bb9ffb1654d4a729bb4cec18ff088eacc153c239"
+
+[[override]]
+  name = "k8s.io/apiserver"
+  revision = "1844acd6a03501626cd17e86248e6ebc0f3df5d9"
+
+[[override]]
   name = "sigs.k8s.io/controller-runtime"
   version = "v0.1.4"
 

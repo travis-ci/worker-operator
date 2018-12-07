@@ -5,12 +5,14 @@ import (
 
 	travisciv1alpha1 "github.com/travis-ci/worker-operator/pkg/apis/travisci/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
-	//	corev1 "k8s.io/api/core/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	//	deploymentutil "k8s.io/kubernetes/pkg/controller/deployment/util"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -107,20 +109,60 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 			return reconcile.Result{}, err
 		}
 
-		// Deployment created successfully - don't requeue
-		return reconcile.Result{}, nil
+		found = deployment
 	} else if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// Deployment already exists - don't requeue
-	reqLogger.Info("Skip reconcile: Deployment already exists", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+	// TODO figure out a way to update the correct properties of the deployment without causing a cycle
+
+	//	if deploymentutil.EqualIgnoreHash(&deployment.Spec.Template, &found.Spec.Template) {
+	//		// Deployment already exists - don't requeue
+	//		reqLogger.Info("Skip reconcile: Deployment already exists", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+	//		return reconcile.Result{}, nil
+	//	}
+	//
+	//	reqLogger.Info("Updating the existing Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
+	//	err = r.client.Update(context.TODO(), deployment)
+	//	if err != nil {
+	//		return reconcile.Result{}, err
+	//	}
+
+	// List the pods for the deployment, and determine their pool sizes
+	podList := &corev1.PodList{}
+	labelSelector := labels.SelectorFromSet(found.Spec.Selector.MatchLabels)
+	listOps := &client.ListOptions{Namespace: instance.Namespace, LabelSelector: labelSelector}
+	if err = r.client.List(context.TODO(), listOps, podList); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	var statuses []travisciv1alpha1.WorkerStatus
+	for _, pod := range podList.Items {
+		statuses = append(statuses, travisciv1alpha1.WorkerStatus{
+			Name: pod.Name,
+			// TODO actually query the workers for this information
+			CurrentPoolSize:   1,
+			ExpectedPoolSize:  1,
+			RequestedPoolSize: 1,
+		})
+	}
+
+	instance.Status = travisciv1alpha1.WorkerClusterStatus{
+		WorkerStatuses: statuses,
+	}
+	if err = r.client.Status().Update(context.TODO(), instance); err != nil {
+		return reconcile.Result{}, err
+	}
+
 	return reconcile.Result{}, nil
 }
 
 func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.Deployment {
 	maxUnavailable := intstr.FromInt(0)
 	maxSurge := intstr.FromInt(1)
+
+	template := cluster.Spec.Template.DeepCopy()
+	configureContainer(&template.Spec.Containers[0])
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -130,7 +172,7 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 		},
 		Spec: appsv1.DeploymentSpec{
 			Selector: cluster.Spec.Selector,
-			Template: cluster.Spec.Template,
+			Template: *template,
 			Strategy: appsv1.DeploymentStrategy{
 				Type: appsv1.RollingUpdateDeploymentStrategyType,
 				RollingUpdate: &appsv1.RollingUpdateDeployment{
@@ -140,4 +182,29 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 			},
 		},
 	}
+}
+
+func configureContainer(c *corev1.Container) {
+	newEnvVars := []corev1.EnvVar{
+		{
+			// The remote controller API is used to adjust pool sizes on the fly
+			Name:  "TRAVIS_WORKER_REMOTE_CONTROLLER_ADDR",
+			Value: "0.0.0.0:8080",
+		},
+		{
+			Name: "TRAVIS_WORKER_REMOTE_CONTROLLER_AUTH",
+			// TODO make this randomly assigned.
+			// The operator needs to know what this is to talk to the worker, but it will have the pod definition,
+			// so it could just read it from there when it needs to query the worker API
+			Value: "worker:worker",
+		},
+		{
+			// Don't start any processors when the worker starts.
+			// Instead, let this operator use the API to assign a pool size.
+			Name:  "TRAVIS_WORKER_POOL_SIZE",
+			Value: "0",
+		},
+	}
+
+	c.Env = append(c.Env, newEnvVars...)
 }
