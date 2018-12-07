@@ -2,6 +2,9 @@ package workercluster
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 
 	travisciv1alpha1 "github.com/travis-ci/worker-operator/pkg/apis/travisci/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -138,13 +141,12 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 
 	var statuses []travisciv1alpha1.WorkerStatus
 	for _, pod := range podList.Items {
-		statuses = append(statuses, travisciv1alpha1.WorkerStatus{
-			Name: pod.Name,
-			// TODO actually query the workers for this information
-			CurrentPoolSize:   1,
-			ExpectedPoolSize:  1,
-			RequestedPoolSize: 1,
-		})
+		s, err := getWorkerStatus(&pod)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+
+		statuses = append(statuses, *s)
 	}
 
 	instance.Status = travisciv1alpha1.WorkerClusterStatus{
@@ -207,4 +209,40 @@ func configureContainer(c *corev1.Container) {
 	}
 
 	c.Env = append(c.Env, newEnvVars...)
+}
+
+func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {
+	s := &travisciv1alpha1.WorkerStatus{
+		Name: pod.Name,
+	}
+
+	ip := pod.Status.PodIP
+	if ip == "" {
+		// We won't get anymore info yet
+		return s, nil
+	}
+	if pod.Status.Phase != corev1.PodRunning {
+		// Same
+		return s, nil
+	}
+
+	url := fmt.Sprintf("http://%s@%s:8080/worker", "worker:worker", ip)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var workerInfo struct {
+		PoolSize         int32 `json:"poolSize"`
+		ExpectedPoolSize int32 `json:"expectedPoolSize"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&workerInfo); err != nil {
+		return nil, err
+	}
+
+	s.CurrentPoolSize = workerInfo.PoolSize
+	s.ExpectedPoolSize = workerInfo.ExpectedPoolSize
+
+	return s, nil
 }
