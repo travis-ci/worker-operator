@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 
 	travisciv1alpha1 "github.com/travis-ci/worker-operator/pkg/apis/travisci/v1alpha1"
@@ -112,9 +113,22 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 			return reconcile.Result{}, err
 		}
 
-		found = deployment
+		// Done. We'll come through here again in response to the deployment being created, and
+		// that's where we will assign pool sizes.
+		return reconcile.Result{}, nil
 	} else if err != nil {
 		return reconcile.Result{}, err
+	}
+
+	if *deployment.Spec.Replicas != *found.Spec.Replicas {
+		reqLogger.Info("Scaling deployment", "CurrentReplicas", found.Spec.Replicas, "DesiredReplicas", deployment.Spec.Replicas)
+		found.Spec.Replicas = deployment.Spec.Replicas
+		if err = r.client.Update(context.TODO(), found); err != nil {
+			return reconcile.Result{}, err
+		}
+
+		// That's all for now.
+		return reconcile.Result{}, nil
 	}
 
 	// TODO figure out a way to update the correct properties of the deployment without causing a cycle
@@ -139,15 +153,51 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 		return reconcile.Result{}, err
 	}
 
-	var statuses []travisciv1alpha1.WorkerStatus
-	for _, pod := range podList.Items {
+	// Pass 1: Gather info from each worker on their current pool size
+	statuses := make([]travisciv1alpha1.WorkerStatus, len(podList.Items))
+	var terminatingJobs int32
+	for i, pod := range podList.Items {
 		s, err := getWorkerStatus(&pod)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
 
-		statuses = append(statuses, *s)
+		if s.Phase == travisciv1alpha1.WorkerTerminating {
+			terminatingJobs += s.CurrentPoolSize
+		}
+
+		statuses[i] = *s
 	}
+
+	// Pass 2: Determine the desired pool size for each worker based on probed status
+	jobsToAssign := instance.Spec.MaxJobs - terminatingJobs
+	workersToAssign := *found.Spec.Replicas
+	for i, status := range statuses {
+		if status.Phase == travisciv1alpha1.WorkerTerminating {
+			// Don't assign anything to terminating workers.
+			continue
+		}
+
+		if workersToAssign < 1 {
+			// We have more non-terminating pods than we have declared replicas for. That
+			// shouldn't happen, but maybe it could. We'll just stop assigning work and hope
+			// it resolves in another reconciliation.
+			reqLogger.V(1).Info("More non-terminating workers than desired replicas")
+		}
+
+		jobs := int32(math.Round(float64(jobsToAssign) / float64(workersToAssign)))
+		jobsToAssign -= jobs
+		workersToAssign--
+
+		// Only actually assign the jobs if the worker is running. We allocated jobs for
+		// pending workers, expecting that they will become running soon.
+		if status.Phase == travisciv1alpha1.WorkerRunning {
+			statuses[i].RequestedPoolSize = jobs
+		}
+	}
+
+	// Pass 3: Actually assign the requested pool sizes to the workers
+	// TODO
 
 	instance.Status = travisciv1alpha1.WorkerClusterStatus{
 		WorkerStatuses: statuses,
@@ -163,6 +213,8 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 	maxUnavailable := intstr.FromInt(0)
 	maxSurge := intstr.FromInt(1)
 
+	replicas := int32(math.Ceil(float64(cluster.Spec.MaxJobs) / float64(cluster.Spec.MaxJobsPerWorker)))
+
 	template := cluster.Spec.Template.DeepCopy()
 	configureContainer(&template.Spec.Containers[0])
 
@@ -173,6 +225,7 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 			Labels:    cluster.Labels,
 		},
 		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
 			Selector: cluster.Spec.Selector,
 			Template: *template,
 			Strategy: appsv1.DeploymentStrategy{
@@ -213,7 +266,8 @@ func configureContainer(c *corev1.Container) {
 
 func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {
 	s := &travisciv1alpha1.WorkerStatus{
-		Name: pod.Name,
+		Name:  pod.Name,
+		Phase: travisciv1alpha1.WorkerPending,
 	}
 
 	ip := pod.Status.PodIP
@@ -224,6 +278,15 @@ func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {
 	if pod.Status.Phase != corev1.PodRunning {
 		// Same
 		return s, nil
+	}
+
+	// There isn't actually a pod phase that represents a pod that is terminating.
+	// Instead, the presence of a deletion timestamp is the canonical indicator of this,
+	// and is what prompts kubectl to show a pod as Terminating.
+	if pod.DeletionTimestamp == nil {
+		s.Phase = travisciv1alpha1.WorkerRunning
+	} else {
+		s.Phase = travisciv1alpha1.WorkerTerminating
 	}
 
 	url := fmt.Sprintf("http://%s@%s:8080/worker", "worker:worker", ip)

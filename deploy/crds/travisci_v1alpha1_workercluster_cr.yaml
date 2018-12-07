@@ -3,6 +3,9 @@ kind: WorkerCluster
 metadata:
   name: example-worker
 spec:
+  maxJobs: 8
+  maxJobsPerWorker: 3
+
   selector:
     matchLabels:
       name: example-worker

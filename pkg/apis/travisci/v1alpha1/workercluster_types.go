@@ -12,6 +12,11 @@ type WorkerClusterSpec struct {
 	// matching worker pods sum to this number.
 	MaxJobs int32 `json:"maxJobs"`
 
+	// Maximum concurrent jobs that a single worker should be able to run. If MaxJobs exceeds
+	// this number, more workers will be started until the number of concurrent jobs per worker
+	// is below this number.
+	MaxJobsPerWorker int32 `json:"maxJobsPerWorker"`
+
 	// Label selector for worker pods. It must match the pod template's labels.
 	Selector *metav1.LabelSelector `json:"selector"`
 
@@ -34,6 +39,11 @@ type WorkerStatus struct {
 	// The name of the worker pod.
 	Name string `json:"name"`
 
+	// Current state that the worker is in.
+	// It's important that we distinguish which worker pods are running normally and which are
+	// in the process of shutting down, for the purposes of assigning pool sizes.
+	Phase WorkerPhase `json:"phase"`
+
 	// The current number of processors running in the worker, as reported by the worker itself.
 	CurrentPoolSize int32 `json:"currentPoolSize"`
 
@@ -47,6 +57,23 @@ type WorkerStatus struct {
 	// should be equal.
 	RequestedPoolSize int32 `json:"requestedPoolSize"`
 }
+
+// WorkerPhase represents the current lifecycle state of a worker.
+type WorkerPhase string
+
+const (
+	// WorkerPending represents a worker that isn't ready to be assigned a pool size.
+	WorkerPending WorkerPhase = "Pending"
+
+	// WorkerRunning represents a worker that is running normally and can have its pool size
+	// changed as needed.
+	WorkerRunning WorkerPhase = "Running"
+
+	// WorkerTerminating represents a worker that is still running jobs but is in the process
+	// of shutting down. Its pool size needs to be accounted for, but it should not be
+	// assigned any more processors.
+	WorkerTerminating WorkerPhase = "Terminating"
+)
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
