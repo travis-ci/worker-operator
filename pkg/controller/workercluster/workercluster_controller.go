@@ -1,11 +1,13 @@
 package workercluster
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
+	"time"
 
 	travisciv1alpha1 "github.com/travis-ci/worker-operator/pkg/apis/travisci/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -197,7 +199,15 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 	}
 
 	// Pass 3: Actually assign the requested pool sizes to the workers
-	// TODO
+	var changed bool
+	for i, status := range statuses {
+		var assigned bool
+		if assigned, err = assignPoolSize(&podList.Items[i], status); err != nil {
+			return reconcile.Result{}, err
+		}
+
+		changed = changed || assigned
+	}
 
 	instance.Status = travisciv1alpha1.WorkerClusterStatus{
 		WorkerStatuses: statuses,
@@ -206,7 +216,14 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 		return reconcile.Result{}, err
 	}
 
-	return reconcile.Result{}, nil
+	result := reconcile.Result{}
+	if changed {
+		// Check back in soon if we made any changes. Stop checking in once we go
+		// through the loop without making any modifications.
+		result.RequeueAfter = 5 * time.Second
+	}
+
+	return result, nil
 }
 
 func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.Deployment {
@@ -270,8 +287,8 @@ func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {
 		Phase: travisciv1alpha1.WorkerPending,
 	}
 
-	ip := pod.Status.PodIP
-	if ip == "" {
+	url := workerURL(pod)
+	if url == "" {
 		// We won't get anymore info yet
 		return s, nil
 	}
@@ -289,7 +306,6 @@ func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {
 		s.Phase = travisciv1alpha1.WorkerTerminating
 	}
 
-	url := fmt.Sprintf("http://%s@%s:8080/worker", "worker:worker", ip)
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -308,4 +324,53 @@ func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {
 	s.ExpectedPoolSize = workerInfo.ExpectedPoolSize
 
 	return s, nil
+}
+
+func assignPoolSize(pod *corev1.Pod, status travisciv1alpha1.WorkerStatus) (bool, error) {
+	// We don't request empty pools. Either the pod is terminating, or it isn't ready to
+	// be told its pool size yet.
+	if status.RequestedPoolSize == 0 {
+		return false, nil
+	}
+
+	// We've already told this pod the right pool size. Its current pool size may not match,
+	// but it should in time.
+	if status.RequestedPoolSize == status.ExpectedPoolSize {
+		return false, nil
+	}
+
+	var data struct {
+		PoolSize int32 `json:"poolSize"`
+	}
+	data.PoolSize = status.RequestedPoolSize
+
+	b := new(bytes.Buffer)
+	json.NewEncoder(b).Encode(data)
+	url := workerURL(pod)
+
+	req, err := http.NewRequest(http.MethodPatch, url, b)
+	if err != nil {
+		return false, err
+	}
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return false, err
+	}
+
+	if resp.StatusCode >= 400 {
+		return false, fmt.Errorf("unexpected status code %s", resp.Status)
+	}
+
+	return true, nil
+}
+
+func workerURL(pod *corev1.Pod) string {
+	ip := pod.Status.PodIP
+	if ip == "" {
+		return ""
+	}
+
+	// TODO pull basic auth credentials from the pod
+	return fmt.Sprintf("http://%s@%s:8080/worker", "worker:worker", ip)
 }
