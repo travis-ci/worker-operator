@@ -65,6 +65,15 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
+	// Watch for changes to pods in worker clusters
+	podMapper := &PodMapper{client: mgr.GetClient()}
+	err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.EnqueueRequestsFromMapFunc{
+		ToRequests: podMapper,
+	})
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -174,8 +183,13 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 	// Pass 2: Determine the desired pool size for each worker based on probed status
 	jobsToAssign := instance.Spec.MaxJobs - terminatingJobs
 	workersToAssign := *found.Spec.Replicas
+	var anyTerminating bool
 	for i, status := range statuses {
 		if status.Phase == travisciv1alpha1.WorkerTerminating {
+			// if any worker is terminating, then the pool sizes are going to shift, and we need to check in and reconcile
+			// to make sure we compensate for the lost capacity as the terminating worker drains its pool
+			anyTerminating = true
+
 			// Don't assign anything to terminating workers.
 			continue
 		}
@@ -217,10 +231,10 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 	}
 
 	result := reconcile.Result{}
-	if changed {
+	if anyTerminating || changed {
 		// Check back in soon if we made any changes. Stop checking in once we go
 		// through the loop without making any modifications.
-		result.RequeueAfter = 5 * time.Second
+		result.RequeueAfter = 10 * time.Second
 	}
 
 	return result, nil
@@ -373,4 +387,66 @@ func workerURL(pod *corev1.Pod) string {
 
 	// TODO pull basic auth credentials from the pod
 	return fmt.Sprintf("http://%s@%s:8080/worker", "worker:worker", ip)
+}
+
+// PodMapper creates reconcile requests for WorkerClusters based on changes to the
+// pods that make up the cluster.
+type PodMapper struct {
+	client client.Client
+}
+
+// Map works back from a Pod to find the WorkerCluster it belongs to. Since this will
+// run for all pods in the Kubernetes cluster, we may find pods that don't belong to
+// a worker cluster, which we will ignore.
+func (m *PodMapper) Map(i handler.MapObject) []reconcile.Request {
+	if i.Meta == nil {
+		return nil
+	}
+
+	podLogger := log.WithValues("Pod.Name", i.Meta.GetName(), "Pod.Namespace", i.Meta.GetNamespace())
+	podLogger.Info("Attempting to map pod to worker cluster")
+
+	// Step 1: Get the controlling ReplicaSet, if any
+	ownerRef := metav1.GetControllerOf(i.Meta)
+	if ownerRef == nil || ownerRef.Kind != "ReplicaSet" {
+		// this pod does not have a controlling ReplicaSet, so ignore it
+		return nil
+	}
+
+	// ownerRef does not have a namespace, but it should be the same as our pod's namespace
+	name := types.NamespacedName{Namespace: i.Meta.GetNamespace(), Name: ownerRef.Name}
+
+	rs := &appsv1.ReplicaSet{}
+	if err := m.client.Get(context.TODO(), name, rs); err != nil {
+		return nil
+	}
+
+	// Step 2: Get the controlling Deployment, if any
+	ownerRef = metav1.GetControllerOf(rs)
+	if ownerRef == nil || ownerRef.Kind != "Deployment" {
+		// this replicaset does not have a controlling deployment, so ignore it
+		return nil
+	}
+
+	name.Name = ownerRef.Name
+
+	deployment := &appsv1.Deployment{}
+	if err := m.client.Get(context.TODO(), name, deployment); err != nil {
+		return nil
+	}
+
+	// Step 3: See if this deployment is controlled by a WorkerCluster. If so, return a
+	// request to enqueue it. We don't need to actually fetch the cluster though.
+	ownerRef = metav1.GetControllerOf(deployment)
+	if ownerRef == nil || ownerRef.Kind != "WorkerCluster" {
+		// this deployment does not have a controlling worker cluster, so ignore it
+		return nil
+	}
+
+	name.Name = ownerRef.Name
+	podLogger.Info("Found worker cluster for pod", "Cluster.Name", name.Name)
+
+	return []reconcile.Request{
+		{NamespacedName: name},
+	}
 }
