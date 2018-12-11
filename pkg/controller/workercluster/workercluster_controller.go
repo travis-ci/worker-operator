@@ -121,6 +121,7 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 		reqLogger.Info("Creating a new Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		err = r.client.Create(context.TODO(), deployment)
 		if err != nil {
+			reqLogger.Error(err, "Could not create deployment")
 			return reconcile.Result{}, err
 		}
 
@@ -134,7 +135,8 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 	if deploymentNeedsUpdate(found, deployment) {
 		reqLogger.Info("Updating deployment")
 
-		if err = r.client.Update(context.TODO(), found); err != nil {
+		if err = r.client.Update(context.TODO(), deployment); err != nil {
+			reqLogger.Error(err, "Could not update deployment")
 			return reconcile.Result{}, err
 		}
 
