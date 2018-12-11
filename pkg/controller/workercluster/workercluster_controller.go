@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	//	deploymentutil "k8s.io/kubernetes/pkg/controller/deployment/util"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -245,9 +244,33 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 	maxSurge := intstr.FromInt(1)
 
 	replicas := int32(math.Ceil(float64(cluster.Spec.MaxJobs) / float64(cluster.Spec.MaxJobsPerWorker)))
+	gracePeriod := int64(7200)
 
-	template := cluster.Spec.Template.DeepCopy()
-	configureContainer(&template.Spec.Containers[0])
+	t := cluster.Spec.Template.DeepCopy()
+	s := t.Spec
+
+	var volumes []corev1.Volume
+	container := corev1.Container{
+		Name:            "worker",
+		Image:           s.Image,
+		ImagePullPolicy: s.ImagePullPolicy,
+		Env:             append(s.Env, additionalEnvVars()...),
+		EnvFrom:         s.EnvFrom,
+	}
+
+	if s.SSHKeySecret != "" {
+		volumes = []corev1.Volume{{
+			Name: "travis-vm-ssh-key",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: s.SSHKeySecret},
+			},
+		}}
+		container.VolumeMounts = []corev1.VolumeMount{{
+			Name:      "travis-vm-ssh-key",
+			ReadOnly:  true,
+			MountPath: "/etc/worker/ssh",
+		}}
+	}
 
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -258,7 +281,16 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 		Spec: appsv1.DeploymentSpec{
 			Replicas: &replicas,
 			Selector: cluster.Spec.Selector,
-			Template: *template,
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: t.ObjectMeta,
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						container,
+					},
+					Volumes:                       volumes,
+					TerminationGracePeriodSeconds: &gracePeriod,
+				},
+			},
 			Strategy: appsv1.DeploymentStrategy{
 				Type: appsv1.RollingUpdateDeploymentStrategyType,
 				RollingUpdate: &appsv1.RollingUpdateDeployment{
@@ -270,8 +302,8 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 	}
 }
 
-func configureContainer(c *corev1.Container) {
-	newEnvVars := []corev1.EnvVar{
+func additionalEnvVars() []corev1.EnvVar {
+	return []corev1.EnvVar{
 		{
 			// The remote controller API is used to adjust pool sizes on the fly
 			Name:  "TRAVIS_WORKER_REMOTE_CONTROLLER_ADDR",
@@ -291,8 +323,6 @@ func configureContainer(c *corev1.Container) {
 			Value: "0",
 		},
 	}
-
-	c.Env = append(c.Env, newEnvVars...)
 }
 
 func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {

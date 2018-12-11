@@ -20,10 +20,38 @@ type WorkerClusterSpec struct {
 	// Label selector for worker pods. It must match the pod template's labels.
 	Selector *metav1.LabelSelector `json:"selector"`
 
-	// Template describes the pods that will be created.
-	Template v1.PodTemplateSpec `json:"template"`
+	// Template describes the workers that will be created.
+	Template WorkerTemplateSpec `json:"template"`
 
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
+}
+
+// WorkerTemplateSpec defines a template for how new worker pods in a cluster will be configured.
+type WorkerTemplateSpec struct {
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              WorkerSpec `json:"spec,omitempty"`
+}
+
+// WorkerSpec defines the configuration of a worker pod.
+type WorkerSpec struct {
+	// The container image for running worker. This will usually be a tag of the "travisci/worker"
+	// repo from Docker Hub.
+	Image string `json:"image,omitempty"`
+
+	// The pull policy for the worker image.
+	ImagePullPolicy v1.PullPolicy `json:"imagePullPolicy,omitempty"`
+
+	// A list of environment variables to set on the worker container.
+	// The worker cluster will add more variables to this list when creating the deployment.
+	Env []v1.EnvVar `json:"env,omitempty"`
+
+	// A list of other sources for environment variables for the worker container.
+	EnvFrom []v1.EnvFromSource `json:"env,omitempty"`
+
+	// The name of a secret containing an SSH key for logging into VMs.
+	// The secret will be mounted at /etc/worker/ssh in the worker container. Be sure to configure
+	// the appropriate environment variable to point the provider at that key.
+	SSHKeySecret string `json:"sshKeySecret,omitempty"`
 }
 
 // WorkerClusterStatus defines the observed state of WorkerCluster

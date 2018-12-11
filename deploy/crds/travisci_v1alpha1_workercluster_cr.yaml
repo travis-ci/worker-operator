@@ -14,47 +14,38 @@ spec:
       labels:
         name: example-worker
     spec:
-      containers:
-      - name: worker
-        image: travisci/worker:v5.1.0-14-g98ceb2d
-        env:
-        - name: JUPITER_BRAIN_AUTH_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: jupiter-brain-com
-              key: JUPITER_BRAIN_AUTH_TOKEN
-        - name: TRAVIS_WORKER_JUPITERBRAIN_ENDPOINT
-          value: http://$(JUPITER_BRAIN_AUTH_TOKEN)@jupiter-brain-com/
+      image: travisci/worker:v5.1.0-14-g98ceb2d
+      env:
+      - name: JUPITER_BRAIN_AUTH_TOKEN
+        valueFrom:
+          secretKeyRef:
+            name: jupiter-brain-com
+            key: JUPITER_BRAIN_AUTH_TOKEN
+      - name: TRAVIS_WORKER_JUPITERBRAIN_ENDPOINT
+        value: http://$(JUPITER_BRAIN_AUTH_TOKEN)@jupiter-brain-com/
 
-        - name: POD_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.name
-        - name: POD_NAMESPACE
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
+      - name: POD_NAME
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.name
+      - name: POD_NAMESPACE
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.namespace
 
-        - name: TRAVIS_WORKER_LIBRATO_SOURCE
-          value: $(POD_NAMESPACE)-$(POD_NAME)
-        - name: TRAVIS_WORKER_HOSTNAME
-          value: $(POD_NAME).$(POD_NAMESPACE)
-        - name: AWS_ACCESS_KEY_ID
-          value: $(TRAVIS_WORKER_AWS_ACCESS_KEY_ID)
-        - name: AWS_SECRET_ACCESS_KEY
-          value: $(TRAVIS_WORKER_AWS_SECRET_ACCESS_KEY)
+      - name: TRAVIS_WORKER_LIBRATO_SOURCE
+        value: $(POD_NAMESPACE)-$(POD_NAME)
+      - name: TRAVIS_WORKER_HOSTNAME
+        value: $(POD_NAME).$(POD_NAMESPACE)
+      - name: AWS_ACCESS_KEY_ID
+        value: $(TRAVIS_WORKER_AWS_ACCESS_KEY_ID)
+      - name: AWS_SECRET_ACCESS_KEY
+        value: $(TRAVIS_WORKER_AWS_SECRET_ACCESS_KEY)
 
-        envFrom:
-        - configMapRef:
-            name: worker-com
-        - secretRef:
-            name: worker-com
-        volumeMounts:
-        - name: travis-vm-ssh-key
-          mountPath: "/etc/secret"
-          readOnly: true
-      volumes:
-      - name: travis-vm-ssh-key
-        secret:
-          secretName: worker-com-vm-key
-      terminationGracePeriodSeconds: 7200
+      envFrom:
+      - configMapRef:
+          name: worker-com
+      - secretRef:
+          name: worker-com
+
+      sshKeySecret: worker-com-vm-key
