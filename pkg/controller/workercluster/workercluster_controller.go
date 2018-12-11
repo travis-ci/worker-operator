@@ -12,6 +12,7 @@ import (
 	travisciv1alpha1 "github.com/travis-ci/worker-operator/pkg/apis/travisci/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -130,30 +131,16 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 		return reconcile.Result{}, err
 	}
 
-	if *deployment.Spec.Replicas != *found.Spec.Replicas {
-		reqLogger.Info("Scaling deployment", "CurrentReplicas", found.Spec.Replicas, "DesiredReplicas", deployment.Spec.Replicas)
-		found.Spec.Replicas = deployment.Spec.Replicas
+	if deploymentNeedsUpdate(found, deployment) {
+		reqLogger.Info("Updating deployment")
+
 		if err = r.client.Update(context.TODO(), found); err != nil {
 			return reconcile.Result{}, err
 		}
 
-		// That's all for now.
+		// That's all for now. The updated deployment will trigger another run through the loop.
 		return reconcile.Result{}, nil
 	}
-
-	// TODO figure out a way to update the correct properties of the deployment without causing a cycle
-
-	//	if deploymentutil.EqualIgnoreHash(&deployment.Spec.Template, &found.Spec.Template) {
-	//		// Deployment already exists - don't requeue
-	//		reqLogger.Info("Skip reconcile: Deployment already exists", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
-	//		return reconcile.Result{}, nil
-	//	}
-	//
-	//	reqLogger.Info("Updating the existing Deployment", "Deployment.Namespace", found.Namespace, "Deployment.Name", found.Name)
-	//	err = r.client.Update(context.TODO(), deployment)
-	//	if err != nil {
-	//		return reconcile.Result{}, err
-	//	}
 
 	// List the pods for the deployment, and determine their pool sizes
 	podList := &corev1.PodList{}
@@ -325,6 +312,61 @@ func additionalEnvVars() []corev1.EnvVar {
 	}
 }
 
+func deploymentNeedsUpdate(old, new *appsv1.Deployment) bool {
+	depLogger := log.WithValues("Deployment.Name", new.Name)
+
+	if *old.Spec.Replicas != *new.Spec.Replicas {
+		depLogger.Info("update needed", "Old.Replicas", *old.Spec.Replicas, "New.Replicas", *new.Spec.Replicas)
+		return true
+	}
+
+	os := &old.Spec.Template.Spec
+	ns := &new.Spec.Template.Spec
+
+	if len(os.Containers) != len(ns.Containers) {
+		depLogger.Info("update needed", "Old.Containers", len(os.Containers), "New.Containers", len(ns.Containers))
+		return true
+	}
+
+	oc := &os.Containers[0]
+	nc := &ns.Containers[0]
+
+	if oc.Image != nc.Image {
+		depLogger.Info("update needed", "Old.Image", oc.Image, "New.Image", nc.Image)
+		return true
+	}
+
+	if oc.ImagePullPolicy != nc.ImagePullPolicy {
+		depLogger.Info("update needed", "Old.ImagePullPolicy", oc.ImagePullPolicy, "New.ImagePullPolicy", nc.ImagePullPolicy)
+		return true
+	}
+
+	if !apiequality.Semantic.DeepEqual(oc.Env, nc.Env) {
+		// this may log that the env count matches, but we're actually comparing contents.
+		// don't want to log them because they may be sensitive values
+		depLogger.Info("update needed", "Old.Env", len(oc.Env), "New.Env", len(nc.Env))
+		return true
+	}
+
+	if !apiequality.Semantic.DeepEqual(oc.EnvFrom, nc.EnvFrom) {
+		depLogger.Info("update needed", "Old.EnvFrom", oc.EnvFrom, "New.EnvFrom", nc.EnvFrom)
+		return true
+	}
+
+	if !apiequality.Semantic.DeepEqual(oc.VolumeMounts, nc.VolumeMounts) {
+		depLogger.Info("update needed", "Old.VolumeMounts", oc.VolumeMounts, "New.VolumeMounts", nc.VolumeMounts)
+		return true
+	}
+
+	if !apiequality.Semantic.DeepEqual(os.Volumes, ns.Volumes) {
+		depLogger.Info("update needed", "Old.Volumes", os.Volumes, "New.Volumes", ns.Volumes)
+		return true
+	}
+
+	depLogger.Info("already up-to-date")
+	return false
+}
+
 func getWorkerStatus(pod *corev1.Pod) (*travisciv1alpha1.WorkerStatus, error) {
 	s := &travisciv1alpha1.WorkerStatus{
 		Name:  pod.Name,
@@ -382,6 +424,8 @@ func assignPoolSize(pod *corev1.Pod, status travisciv1alpha1.WorkerStatus) (bool
 	if status.RequestedPoolSize == status.ExpectedPoolSize {
 		return false, nil
 	}
+
+	log.Info("Assigning pool size to worker pod", "Pod.Name", pod.Name, "PoolSize", status.RequestedPoolSize)
 
 	var data struct {
 		PoolSize int32 `json:"poolSize"`

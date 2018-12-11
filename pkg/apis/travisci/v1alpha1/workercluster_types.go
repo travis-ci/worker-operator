@@ -46,7 +46,7 @@ type WorkerSpec struct {
 	Env []v1.EnvVar `json:"env,omitempty"`
 
 	// A list of other sources for environment variables for the worker container.
-	EnvFrom []v1.EnvFromSource `json:"env,omitempty"`
+	EnvFrom []v1.EnvFromSource `json:"envFrom,omitempty"`
 
 	// The name of a secret containing an SSH key for logging into VMs.
 	// The secret will be mounted at /etc/worker/ssh in the worker container. Be sure to configure
