@@ -15,6 +15,7 @@ spec:
         name: example-worker
     spec:
       image: travisci/worker:v5.1.0-16-gf1e7bd2
+      imagePullPolicy: IfNotPresent
       env:
       - name: JUPITER_BRAIN_AUTH_TOKEN
         valueFrom:

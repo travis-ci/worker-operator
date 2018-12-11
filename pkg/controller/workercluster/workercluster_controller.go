@@ -234,6 +234,7 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 
 	replicas := int32(math.Ceil(float64(cluster.Spec.MaxJobs) / float64(cluster.Spec.MaxJobsPerWorker)))
 	gracePeriod := int64(7200)
+	defaultMode := int32(420)
 
 	t := cluster.Spec.Template.DeepCopy()
 	s := t.Spec
@@ -243,7 +244,7 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 		Name:            "worker",
 		Image:           s.Image,
 		ImagePullPolicy: s.ImagePullPolicy,
-		Env:             append(s.Env, additionalEnvVars()...),
+		Env:             configureEnvironment(s.Env),
 		EnvFrom:         s.EnvFrom,
 	}
 
@@ -251,7 +252,10 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 		volumes = []corev1.Volume{{
 			Name: "travis-vm-ssh-key",
 			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{SecretName: s.SSHKeySecret},
+				Secret: &corev1.SecretVolumeSource{
+					SecretName:  s.SSHKeySecret,
+					DefaultMode: &defaultMode,
+				},
 			},
 		}}
 		container.VolumeMounts = []corev1.VolumeMount{{
@@ -289,6 +293,18 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 			},
 		},
 	}
+}
+
+func configureEnvironment(env []corev1.EnvVar) []corev1.EnvVar {
+	for i := range env {
+		if env[i].ValueFrom != nil && env[i].ValueFrom.FieldRef != nil {
+			if env[i].ValueFrom.FieldRef.APIVersion == "" {
+				env[i].ValueFrom.FieldRef.APIVersion = "v1"
+			}
+		}
+	}
+
+	return append(env, additionalEnvVars()...)
 }
 
 func additionalEnvVars() []corev1.EnvVar {
