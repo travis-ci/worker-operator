@@ -187,6 +187,7 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 			// shouldn't happen, but maybe it could. We'll just stop assigning work and hope
 			// it resolves in another reconciliation.
 			reqLogger.V(1).Info("More non-terminating workers than desired replicas")
+			continue
 		}
 
 		jobs := int32(math.Round(float64(jobsToAssign) / float64(workersToAssign)))
@@ -231,6 +232,7 @@ func (r *ReconcileWorkerCluster) Reconcile(request reconcile.Request) (reconcile
 func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.Deployment {
 	maxUnavailable := intstr.FromInt(0)
 	maxSurge := intstr.FromInt(1)
+	checkPort := intstr.FromInt(8080)
 
 	replicas := int32(math.Ceil(float64(cluster.Spec.MaxJobs) / float64(cluster.Spec.MaxJobsPerWorker)))
 	gracePeriod := int64(7200)
@@ -246,6 +248,22 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 		ImagePullPolicy: s.ImagePullPolicy,
 		Env:             configureEnvironment(s.Env),
 		EnvFrom:         s.EnvFrom,
+		LivenessProbe: &corev1.Probe{
+			Handler: corev1.Handler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz",
+					Port: checkPort,
+				},
+			},
+		},
+		ReadinessProbe: &corev1.Probe{
+			Handler: corev1.Handler{
+				HTTPGet: &corev1.HTTPGetAction{
+					Path: "/ready",
+					Port: checkPort,
+				},
+			},
+		},
 	}
 
 	if s.SSHKeySecret != "" {
