@@ -29,4 +29,59 @@ This means we can use the normal behavior of Kubernetes to roll out new pods imm
 
 ## Examples
 
-TODO. The actual specification of the custom WorkerCluster resource is still in flux.
+The following YAML will create a deployment of three workers with pool size totalling to 8.
+
+```yaml
+apiVersion: travisci.com/v1alpha1
+kind: WorkerCluster
+metadata:
+  name: example-worker
+spec:
+  maxJobs: 8
+  maxJobsPerWorker: 3
+
+  selector:
+    matchLabels:
+      name: example-worker
+  template:
+    metadata:
+      labels:
+        name: example-worker
+    spec:
+      image: travisci/worker:v6.0.0
+      imagePullPolicy: IfNotPresent
+      env:
+      - name: TRAVIS_WORKER_JUPITERBRAIN_SSH_KEY_PATH
+        value: /etc/worker/ssh/travis-vm.key
+      envFrom:
+      - configMapRef:
+          name: worker-com
+      - secretRef:
+          name: worker-com
+      sshKeySecret: worker-com-vm-key
+```
+
+You can see what the pool sizes are for the individual workers by inspecting the `status` subresource of the worker cluster:
+
+```
+$ kubectl get -o yaml workercluster example-worker
+...
+status:
+  workerStatuses:
+  - currentPoolSize: 3
+    expectedPoolSize: 3
+    name: example-worker-668cf57bff-254w7
+    phase: Running
+    requestedPoolSize: 3
+  - currentPoolSize: 3
+    expectedPoolSize: 3
+    name: example-worker-668cf57bff-b6nj4
+    phase: Running
+    requestedPoolSize: 3
+  - currentPoolSize: 2
+    expectedPoolSize: 2
+    name: example-worker-668cf57bff-bmbwn
+    phase: Running
+    requestedPoolSize: 2
+...
+```
