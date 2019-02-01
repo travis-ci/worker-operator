@@ -249,6 +249,7 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 		Env:             configureEnvironment(s.Env),
 		EnvFrom:         s.EnvFrom,
 		LivenessProbe: &corev1.Probe{
+			InitialDelaySeconds: 120,
 			Handler: corev1.Handler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: "/healthz",
@@ -396,6 +397,11 @@ func deploymentNeedsUpdate(old, new *appsv1.Deployment) bool {
 
 	if !apiequality.Semantic.DeepEqual(os.Volumes, ns.Volumes) {
 		depLogger.Info("update needed", "Old.Volumes", os.Volumes, "New.Volumes", ns.Volumes)
+		return true
+	}
+
+	if oc.LivenessProbe.InitialDelaySeconds != nc.LivenessProbe.InitialDelaySeconds {
+		depLogger.Info("update needed", "Old.LivenessProbe.InitialDelaySeconds", oc.LivenessProbe.InitialDelaySeconds, "New.LivenessProbe.InitialDelaySeconds", nc.LivenessProbe.InitialDelaySeconds)
 		return true
 	}
 
