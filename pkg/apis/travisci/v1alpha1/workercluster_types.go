@@ -41,6 +41,9 @@ type WorkerSpec struct {
 	// The pull policy for the worker image.
 	ImagePullPolicy v1.PullPolicy `json:"imagePullPolicy,omitempty"`
 
+	// Request/limit resources for the worker container.
+	Resources v1.ResourceRequirements `json:"resources,omitempty"`
+
 	// A list of environment variables to set on the worker container.
 	// The worker cluster will add more variables to this list when creating the deployment.
 	Env []v1.EnvVar `json:"env,omitempty"`

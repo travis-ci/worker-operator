@@ -248,6 +248,7 @@ func newDeploymentForCluster(cluster *travisciv1alpha1.WorkerCluster) *appsv1.De
 		ImagePullPolicy: s.ImagePullPolicy,
 		Env:             configureEnvironment(s.Env),
 		EnvFrom:         s.EnvFrom,
+		Resources:       s.Resources,
 		LivenessProbe: &corev1.Probe{
 			InitialDelaySeconds: 120,
 			Handler: corev1.Handler{
